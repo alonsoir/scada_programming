@@ -1,3 +1,8 @@
+[![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://python.org)
+[![Dash](https://img.shields.io/badge/Dash-3.0+-green.svg)](https://dash.plotly.com)
+[![Modbus](https://img.shields.io/badge/Modbus-TCP-orange.svg)](https://pymodbus.readthedocs.io)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 # 🚀 Aerospace SCADA System
 
 Un sistema SCADA (Supervisory Control and Data Acquisition) completo desarrollado en Python para monitoreo y control de sistemas aeroespaciales en tiempo real.
