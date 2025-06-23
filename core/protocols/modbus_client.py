@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""
+Cliente Modbus para comunicación con PLC
+Maneja la lectura/escritura de tags del proceso
+"""
+
+import asyncio
+import logging
+from pymodbus.client import ModbusTcpClient
+from pymodbus.exceptions import ModbusException
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class ModbusClient:
+    def __init__(self, host='127.0.0.1', port=5020):
+        self.host = host
+        self.port = port
+        self.client = None
+        self.connected = False
+
+        # Mapeo de tags (debe coincidir con el PLC virtual)
+        self.tag_map = {
+            # Temperaturas (Holding Registers, valores x10)
+            'engine_temp_1': {'address': 0, 'type': 'holding', 'scale': 0.1},
+            'engine_temp_2': {'address': 1, 'type': 'holding', 'scale': 0.1},
+            'cabin_temp': {'address': 2, 'type': 'holding', 'scale': 0.1},
+
+            # Presiones (Holding Registers, valores x10)
+            'hydraulic_pressure': {'address': 10, 'type': 'holding', 'scale': 0.1},
+            'fuel_pressure': {'address': 11, 'type': 'holding', 'scale': 0.1},
+            'oil_pressure': {'address': 12, 'type': 'holding', 'scale': 0.1},
+
+            # Estados digitales (Coils)
+            'pump_1_status': {'address': 20, 'type': 'coil'},
+            'pump_2_status': {'address': 21, 'type': 'coil'},
+            'emergency_stop': {'address': 22, 'type': 'coil'},
+            'system_ready': {'address': 23, 'type': 'coil'},
+
+            # Contadores (Holding Registers)
+            'flight_hours': {'address': 30, 'type': 'holding'},
+            'cycles_count': {'address': 31, 'type': 'holding'},
+        }
+
+    async def connect(self) -> bool:
+        """Conectar al servidor Modbus"""
+        try:
+            # Crear cliente en el hilo principal
+            loop = asyncio.get_event_loop()
+
+            # Ejecutar la conexión en un hilo separado
+            self.client = await loop.run_in_executor(
+                None,
+                lambda: ModbusTcpClient(host=self.host, port=self.port, timeout=5)
+            )
+
+            # Conectar en hilo separado
+            self.connected = await loop.run_in_executor(
+                None,
+                self.client.connect
+            )
+
+            if self.connected:
+                logger.info(f"Conectado al PLC en {self.host}:{self.port}")
+            else:
+                logger.error(f"Error al conectar con PLC en {self.host}:{self.port}")
+
+            return self.connected
+
+        except Exception as e:
+            logger.error(f"Error de conexión: {e}")
+            return False
+
+    async def disconnect(self):
+        """Desconectar del servidor Modbus"""
+        if self.client and self.connected:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.client.close)
+            self.connected = False
+            logger.info("Desconectado del PLC")
+        return True  # Devolver algo para que await funcione
+
+    async def read_tag(self, tag_name: str) -> Optional[Any]:
+        """Leer un tag específico"""
+        if not self.connected:
+            logger.error("Cliente no conectado")
+            return None
+
+        if tag_name not in self.tag_map:
+            logger.error(f"Tag desconocido: {tag_name}")
+            return None
+
+        tag_config = self.tag_map[tag_name]
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            if tag_config['type'] == 'holding':
+                # Leer Holding Register
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.read_holding_registers(
+                        tag_config['address'], 1, unit=1
+                    )
+                )
+                if not result.isError():
+                    value = result.registers[0]
+                    # Aplicar escala si existe
+                    if 'scale' in tag_config:
+                        value = value * tag_config['scale']
+                    return value
+
+            elif tag_config['type'] == 'coil':
+                # Leer Coil
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.read_coils(
+                        tag_config['address'], 1, unit=1
+                    )
+                )
+                if not result.isError():
+                    return bool(result.bits[0])
+
+            logger.error(f"Error leyendo tag {tag_name}: {result}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Excepción leyendo tag {tag_name}: {e}")
+            return None
+
+    async def write_tag(self, tag_name: str, value: Any) -> bool:
+        """Escribir un tag específico"""
+        if not self.connected:
+            logger.error("Cliente no conectado")
+            return False
+
+        if tag_name not in self.tag_map:
+            logger.error(f"Tag desconocido: {tag_name}")
+            return False
+
+        tag_config = self.tag_map[tag_name]
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            if tag_config['type'] == 'holding':
+                # Aplicar escala inversa si existe
+                write_value = value
+                if 'scale' in tag_config:
+                    write_value = int(value / tag_config['scale'])
+
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.write_register(
+                        tag_config['address'], write_value, unit=1
+                    )
+                )
+                return not result.isError()
+
+            elif tag_config['type'] == 'coil':
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.write_coil(
+                        tag_config['address'], bool(value), unit=1
+                    )
+                )
+                return not result.isError()
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error escribiendo tag {tag_name}: {e}")
+            return False
+
+    async def read_all_tags(self) -> Dict[str, Any]:
+        """Leer todos los tags configurados"""
+        results = {}
+
+        for tag_name in self.tag_map.keys():
+            value = await self.read_tag(tag_name)
+            if value is not None:
+                results[tag_name] = value
+
+        return results
+
+    async def scan_cycle(self, callback=None) -> Dict[str, Any]:
+        """Ejecutar un ciclo de lectura completo"""
+        if not self.connected:
+            await self.connect()
+
+        if not self.connected:
+            return {}
+
+        try:
+            # Leer todos los tags
+            data = await self.read_all_tags()
+
+            # Ejecutar callback si se proporciona
+            if callback and data:
+                await callback(data)
+
+            return data
+
+        except Exception as e:
+            logger.error(f"Error en ciclo de scan: {e}")
+            return {}
+
+
+# Script de prueba
+async def test_modbus_client():
+    """Función de prueba para el cliente Modbus"""
+    client = ModbusClient()
+
+    # Intentar conectar
+    if await client.connect():
+        print("✅ Conexión exitosa al PLC virtual")
+
+        # Leer algunos tags
+        temp1 = await client.read_tag('engine_temp_1')
+        pressure = await client.read_tag('hydraulic_pressure')
+        pump_status = await client.read_tag('pump_1_status')
+
+        print(f"🌡️  Temperatura Motor 1: {temp1}°C")
+        print(f"🔧 Presión Hidráulica: {pressure} bar")
+        print(f"💧 Estado Bomba 1: {'ON' if pump_status else 'OFF'}")
+
+        # Leer todos los tags
+        print("\n📊 Todos los tags:")
+        all_data = await client.read_all_tags()
+        for tag, value in all_data.items():
+            print(f"   {tag}: {value}")
+
+        await client.disconnect()
+    else:
+        print("❌ Error: No se pudo conectar al PLC virtual")
+        print("💡 Asegúrate de ejecutar virtual_plc.py primero")
+
+
+def run_sync_test():
+    """Wrapper para ejecutar el test sin problemas de asyncio"""
+    try:
+        # Crear nuevo loop de eventos
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(test_modbus_client())
+    except Exception as e:
+        print(f"Error en el test: {e}")
+    finally:
+        loop.close()
+
+
+if __name__ == "__main__":
+    run_sync_test()
