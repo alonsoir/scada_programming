@@ -199,3 +199,5 @@ tmp/
 # CSV data files (optional - remove if you want to track data)
 *.csv
 data/*.csv
+
+*.cap
