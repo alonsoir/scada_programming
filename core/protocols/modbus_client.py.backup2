@@ -101,7 +101,7 @@ class ModbusClient:
                 result = await loop.run_in_executor(
                     None,
                     lambda: self.client.read_holding_registers(
-                        tag_config['address'], count=1, slave=1
+                        tag_config['address'], 1, slave=1
                     )
                 )
                 if not result.isError():
@@ -116,7 +116,7 @@ class ModbusClient:
                 result = await loop.run_in_executor(
                     None,
                     lambda: self.client.read_coils(
-                        tag_config['address'], count=1, slave=1
+                        tag_config['address'], 1, slave=1
                     )
                 )
                 if not result.isError():
